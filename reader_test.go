@@ -5,6 +5,7 @@ package textandbinaryreader
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"testing"
@@ -12,20 +13,20 @@ import (
 	qt "github.com/frankban/quicktest"
 )
 
+var writeBlob = func(c *qt.C, w io.Writer, id uint32, data []byte) {
+	c.Helper()
+	err := WriteBlobHeader(w, id, uint32(len(data)))
+	c.Assert(err, qt.IsNil)
+	_, err = w.Write(data)
+	c.Assert(err, qt.IsNil)
+}
+
 func TestReader(t *testing.T) {
 	c := qt.New(t)
 
 	const testJSONTemplate = `{"item":"Item %d","price":%d}`
 	json := func(i int) string {
 		return fmt.Sprintf(testJSONTemplate, i, i*10)
-	}
-
-	writeBlob := func(w io.Writer, id uint32, data []byte) {
-		c.Helper()
-		err := WriteBlobHeader(w, id, uint32(len(data)))
-		c.Assert(err, qt.IsNil)
-		_, err = w.Write(data)
-		c.Assert(err, qt.IsNil)
 	}
 
 	blob1 := []byte{0xDE, 0xAD, 0xBE, 0xEF}
@@ -46,7 +47,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 101, blob1)
+				writeBlob(c, &buf, 101, blob1)
 				buf.WriteString(json(2))
 				return &buf
 			},
@@ -58,7 +59,7 @@ func TestReader(t *testing.T) {
 			name: "starts with blob",
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
-				writeBlob(&buf, 102, blob1)
+				writeBlob(c, &buf, 102, blob1)
 				buf.WriteString(json(1))
 				return &buf
 			},
@@ -71,7 +72,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 103, blob1)
+				writeBlob(c, &buf, 103, blob1)
 				return &buf
 			},
 			wantOutput:  json(1),
@@ -82,8 +83,8 @@ func TestReader(t *testing.T) {
 			name: "multiple consecutive blobs",
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
-				writeBlob(&buf, 104, blob1)
-				writeBlob(&buf, 201, blob2)
+				writeBlob(c, &buf, 104, blob1)
+				writeBlob(c, &buf, 201, blob2)
 				return &buf
 			},
 			wantOutput:  "",
@@ -95,9 +96,9 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 105, blob1)
+				writeBlob(c, &buf, 105, blob1)
 				buf.WriteString(json(2))
-				writeBlob(&buf, 202, blob2)
+				writeBlob(c, &buf, 202, blob2)
 				buf.WriteString(json(3))
 				return &buf
 			},
@@ -110,7 +111,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 106, []byte{})
+				writeBlob(c, &buf, 106, []byte{})
 				buf.WriteString(json(2))
 				return &buf
 			},
@@ -125,7 +126,7 @@ func TestReader(t *testing.T) {
 				buf.WriteString(json(1))
 				buf.Write(BlobMarker[:4])
 				buf.WriteString(json(2))
-				writeBlob(&buf, 107, blob1)
+				writeBlob(c, &buf, 107, blob1)
 				return &buf
 			},
 			wantOutput:  json(1) + string(BlobMarker[:4]) + json(2),
@@ -150,7 +151,7 @@ func TestReader(t *testing.T) {
 			name: "blob only",
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
-				writeBlob(&buf, 108, blob1)
+				writeBlob(c, &buf, 108, blob1)
 				return &buf
 			},
 			wantOutput:  "",
@@ -162,7 +163,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 109, blob1)
+				writeBlob(c, &buf, 109, blob1)
 				buf.WriteString(json(2))
 				return &buf
 			},
@@ -176,7 +177,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 110, blob1)
+				writeBlob(c, &buf, 110, blob1)
 				return &buf
 			},
 			handler:    "error",
@@ -188,7 +189,7 @@ func TestReader(t *testing.T) {
 			buildInput: func(c *qt.C) io.Reader {
 				var buf bytes.Buffer
 				buf.WriteString(json(1))
-				writeBlob(&buf, 111, blob1)
+				writeBlob(c, &buf, 111, blob1)
 				buf.WriteString(json(2))
 				return &buf
 			},
@@ -259,18 +260,61 @@ func TestReader(t *testing.T) {
 	}
 }
 
+func TestReaderJSONDecode(t *testing.T) {
+	c := qt.New(t)
+
+	var buf bytes.Buffer
+	buf.WriteString("{\"item\":\"Item 1\",\"price\":10}\n")
+	writeBlob(c, &buf, 201, []byte{0xAA, 0xBB, 0xCC})
+	buf.WriteString("{\"item\":\"Item 2\",\"price\":20}\n")
+
+	var decodedItems []struct {
+		Item  string `json:"item"`
+		Price int    `json:"price"`
+	}
+
+	handleBlob := func(id uint32, r io.Reader) error {
+		io.Copy(io.Discard, r)
+		return nil
+	}
+
+	r := New(&buf, handleBlob)
+	decoder := json.NewDecoder(r)
+
+	for {
+		var item struct {
+			Item  string `json:"item"`
+			Price int    `json:"price"`
+		}
+		err := decoder.Decode(&item)
+		if err == io.EOF {
+			break
+		}
+		c.Assert(err, qt.IsNil)
+		decodedItems = append(decodedItems, item)
+	}
+
+	c.Assert(decodedItems, qt.DeepEquals, []struct {
+		Item  string `json:"item"`
+		Price int    `json:"price"`
+	}{
+		{"Item 1", 10},
+		{"Item 2", 20},
+	})
+}
+
 func TestBlobHeaderWriteAndRead(t *testing.T) {
 	c := qt.New(t)
 
 	var b bytes.Buffer
 	err := WriteBlobHeader(&b, 42, 100)
 	c.Assert(err, qt.IsNil)
-	c.Assert(b.Len(), qt.Equals, 8+4+8) // marker + id + size
+	c.Assert(b.Len(), qt.Equals, 8+4+4) // marker + id + size
 
 	id, size, err := ReadBlobHeader(&b)
 	c.Assert(err, qt.IsNil)
 	c.Assert(id, qt.Equals, uint32(42))
-	c.Assert(size, qt.Equals, uint64(100))
+	c.Assert(size, qt.Equals, uint32(100))
 }
 
 func BenchmarkReader(b *testing.B) {
