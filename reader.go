@@ -18,6 +18,9 @@ var BlobMarker [8]byte = [8]byte{'T', 'A', 'K', '3', '5', 'E', 'M', '1'}
 // when a binary blob is encountered. Note that the io.Reader passed to handleBlob
 // is only valid during the call and any non-consumed data will be discarded.
 // The returned Reader represents the text stream with blobs filtered out.
+// 
+// Note: handleBlob may be called from a different goroutine. If your handleBlob
+// implementation accesses shared state, it must be thread-safe.
 func NewReader(r io.Reader, handleBlob func(id uint32, r io.Reader) error) io.ReadCloser {
 	pr, pw := io.Pipe()
 	blobR, blobW := io.Pipe()
@@ -43,12 +46,14 @@ func NewReader(r io.Reader, handleBlob func(id uint32, r io.Reader) error) io.Re
 			lr := io.LimitReader(blobR, int64(size))
 			err = handleBlob(id, lr)
 			if err != nil {
+				blobW.Close()
 				return err
 			}
 
 			// Ensure the entire blob is consumed.
 			_, err = io.Copy(io.Discard, lr)
 			if err != nil {
+				blobW.Close()
 				return err
 			}
 		}
@@ -78,8 +83,8 @@ type reader struct {
 }
 
 func (r *reader) Close() error {
-	err := r.g.Wait()
 	r.PipeReader.Close()
+	err := r.g.Wait()
 	return err
 }
 
