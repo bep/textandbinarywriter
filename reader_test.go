@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -205,6 +206,7 @@ func TestReader(t *testing.T) {
 			var (
 				handledBlobs   [][]byte
 				handledBlobIDs []uint32
+				mu             sync.Mutex
 			)
 
 			var handleBlob func(id uint32, r io.Reader) error
@@ -215,41 +217,54 @@ func TestReader(t *testing.T) {
 				}
 			case "partialRead":
 				handleBlob = func(id uint32, r io.Reader) error {
+					mu.Lock()
+					defer mu.Unlock()
 					handledBlobIDs = append(handledBlobIDs, id)
 					// Read only one byte.
 					b := make([]byte, 1)
 					_, err := r.Read(b)
+					if err != nil && err != io.EOF {
+						return err
+					}
 					handledBlobs = append(handledBlobs, b)
-					return err
+					return nil
 				}
 			default:
 				handleBlob = func(id uint32, r io.Reader) error {
 					b, err := io.ReadAll(r)
 					c.Assert(err, qt.IsNil)
+					mu.Lock()
+					defer mu.Unlock()
 					handledBlobIDs = append(handledBlobIDs, id)
 					handledBlobs = append(handledBlobs, b)
 					return nil
 				}
 			}
 
-			r := New(tc.buildInput(c), handleBlob)
+			r := NewReader(tc.buildInput(c), handleBlob)
 			var outBuf bytes.Buffer
-			var err error
+			var copyErr error
 
 			if tc.readBufSize > 0 {
-				_, err = io.CopyBuffer(&outBuf, r, make([]byte, tc.readBufSize))
+				_, copyErr = io.CopyBuffer(&outBuf, r, make([]byte, tc.readBufSize))
 			} else {
-				_, err = io.Copy(&outBuf, r)
+				_, copyErr = io.Copy(&outBuf, r)
 			}
 
+			closeErr := r.Close()
+
 			if tc.wantErr != "" {
-				c.Assert(err, qt.ErrorMatches, tc.wantErr)
+				c.Assert(closeErr, qt.ErrorMatches, tc.wantErr)
+				c.Assert(copyErr, qt.IsNil)
 			} else {
-				c.Assert(err, qt.IsNil)
+				c.Assert(copyErr, qt.IsNil)
+				c.Assert(closeErr, qt.IsNil)
 			}
 
 			c.Assert(outBuf.String(), qt.Equals, tc.wantOutput)
 
+			mu.Lock()
+			defer mu.Unlock()
 			if tc.wantBlobs != nil {
 				c.Assert(handledBlobs, qt.DeepEquals, tc.wantBlobs)
 			}
@@ -278,7 +293,7 @@ func TestReaderJSONDecode(t *testing.T) {
 		return nil
 	}
 
-	r := New(&buf, handleBlob)
+	r := NewReader(&buf, handleBlob)
 	decoder := json.NewDecoder(r)
 
 	for {
@@ -293,6 +308,8 @@ func TestReaderJSONDecode(t *testing.T) {
 		c.Assert(err, qt.IsNil)
 		decodedItems = append(decodedItems, item)
 	}
+
+	c.Assert(r.Close(), qt.IsNil)
 
 	c.Assert(decodedItems, qt.DeepEquals, []struct {
 		Item  string `json:"item"`
@@ -339,8 +356,12 @@ func BenchmarkReader(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		r := New(&buf, bh)
+		r := NewReader(&buf, bh)
 		_, err := io.Copy(io.Discard, r)
+		if err != nil {
+			b.Fatal(err)
+		}
+		err = r.Close()
 		if err != nil {
 			b.Fatal(err)
 		}

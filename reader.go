@@ -4,85 +4,83 @@
 package textandbinaryreader
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // BlobMarker is used to identify start of a binary blob.
 var BlobMarker [8]byte = [8]byte{'T', 'A', 'K', '3', '5', 'E', 'M', '1'}
 
-// New creates a new Reader that reads from r and calls handleBlob
+// NewReader creates a new io.ReadCloser that reads from r and calls handleBlob
 // when a binary blob is encountered. Note that the io.Reader passed to handleBlob
 // is only valid during the call and any non-consumed data will be discarded.
 // The returned Reader represents the text stream with blobs filtered out.
-func New(r io.Reader, handleBlob func(id uint32, r io.Reader) error) io.Reader {
-	return &Reader{
-		r:          bufio.NewReader(r),
-		handleBlob: handleBlob,
+func NewReader(r io.Reader, handleBlob func(id uint32, r io.Reader) error) io.ReadCloser {
+	pr, pw := io.Pipe()
+	blobR, blobW := io.Pipe()
+
+	writer := NewWriter(pw, blobW)
+
+	g, _ := errgroup.WithContext(context.Background())
+
+	rc := &reader{
+		PipeReader: pr,
+		g:          g,
 	}
-}
 
-var _ io.Reader = (*Reader)(nil)
-
-// Reader is a reader that filters out binary blobs from a stream.
-type Reader struct {
-	// underlying reader
-	r *bufio.Reader
-	// handleBlob is called when a blob is encountered.
-	// The reader passed to it receives the blob. Any non-consumed data will be discarded.
-	handleBlob func(id uint32, r io.Reader) error
-}
-
-// Read implements io.Reader.
-func (r *Reader) Read(p []byte) (n int, err error) {
-	for n < len(p) {
-		peeked, err := r.r.Peek(len(BlobMarker))
-		if err != nil {
-			// Not enough bytes to form a marker, so the rest is text.
-			read, readErr := r.r.Read(p[n:])
-			n += read
-			return n, readErr
-		}
-
-		if bytes.Equal(peeked, BlobMarker[:]) {
-			// Discard the marker.
-			_, err = r.r.Discard(len(BlobMarker))
+	// Goroutine to process blobs
+	g.Go(func() error {
+		defer blobR.Close()
+		for {
+			id, size, err := ReadBlobHeader(blobR)
 			if err != nil {
-				return n, err
+				return firstRealError(err)
 			}
 
-			// Read the blob header.
-			id, size, err := ReadBlobHeaderExcludingMarker(r.r)
+			lr := io.LimitReader(blobR, int64(size))
+			err = handleBlob(id, lr)
 			if err != nil {
-				return n, err
-			}
-
-			// Create a limited reader for the blob and handle it.
-			lr := io.LimitReader(r.r, int64(size))
-			if err := r.handleBlob(id, lr); err != nil {
-				return n, err
+				return err
 			}
 
 			// Ensure the entire blob is consumed.
-			if _, err := io.Copy(io.Discard, lr); err != nil {
-				return n, err
+			_, err = io.Copy(io.Discard, lr)
+			if err != nil {
+				return err
 			}
-
-			continue
-
 		}
+	})
 
-		// Not a marker, read one byte.
-		p[n], err = r.r.ReadByte()
-		if err != nil {
-			return n, err
+	// Goroutine to feed the writer
+	g.Go(func() error {
+		_, err := io.Copy(writer, r)
+		return firstRealError(err, pw.Close(), blobW.Close())
+	})
+
+	return rc
+}
+
+func firstRealError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil && err != io.EOF && err != io.ErrClosedPipe {
+			return err
 		}
-		n++
 	}
+	return nil
+}
 
-	return n, nil
+type reader struct {
+	*io.PipeReader
+	g *errgroup.Group
+}
+
+func (r *reader) Close() error {
+	err := r.g.Wait()
+	r.PipeReader.Close()
+	return err
 }
 
 // WriteBlobHeader writes a blob header to w with the given id and size using little-endian encoding.

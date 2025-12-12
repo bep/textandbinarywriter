@@ -156,9 +156,10 @@ func TestWriter(t *testing.T) {
 
 	for _, tc := range testCases {
 		c.Run(tc.name, func(c *qt.C) {
-			textPipe, binaryPipe := newPipeReadWriteCloser(), newPipeReadWriteCloser()
+			textReader, textWriter := io.Pipe()
+			binaryReader, binaryWriter := io.Pipe()
 
-			w := NewWriter(textPipe, binaryPipe)
+			w := NewWriter(textWriter, binaryWriter)
 
 			var textOut, binaryOut bytes.Buffer
 			var wg sync.WaitGroup
@@ -166,14 +167,14 @@ func TestWriter(t *testing.T) {
 
 			go func() {
 				defer wg.Done()
-				_, err := io.Copy(&textOut, textPipe.PipeReader)
+				_, err := io.Copy(&textOut, textReader)
 				if err != nil && (err != io.EOF && err != io.ErrClosedPipe) {
 					c.Errorf("error copying text: %v", err)
 				}
 			}()
 			go func() {
 				defer wg.Done()
-				_, err := io.Copy(&binaryOut, binaryPipe)
+				_, err := io.Copy(&binaryOut, binaryReader)
 				if err != nil && (err != io.EOF && err != io.ErrClosedPipe) {
 					c.Errorf("error copying binary: %v", err)
 				}
@@ -184,8 +185,8 @@ func TestWriter(t *testing.T) {
 					err := writeFn(w)
 					c.Assert(err, qt.IsNil)
 				}
-				textPipe.Close()
-				binaryPipe.Close()
+				textWriter.Close()
+				binaryWriter.Close()
 			}()
 
 			// Wait for readers to finish.
@@ -201,26 +202,22 @@ func TestWriter(t *testing.T) {
 	}
 }
 
-// pipeReadWriteCloser is a convenience type to create a pipe with a ReadCloser and a WriteCloser.
-type pipeReadWriteCloser struct {
-	*io.PipeReader
-	*io.PipeWriter
-}
+func BenchmarkWriter(b *testing.B) {
+	textBuf := bytes.Repeat([]byte("Hello, World!\n"), 1000)
+	blobData := bytes.Repeat([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 100)
 
-// newPipeReadWriteCloser creates a new PipeReadWriteCloser.
-func newPipeReadWriteCloser() pipeReadWriteCloser {
-	pr, pw := io.Pipe()
-	return pipeReadWriteCloser{pr, pw}
-}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var textOut bytes.Buffer
+		var binaryOut bytes.Buffer
 
-func (c pipeReadWriteCloser) Close() (err error) {
-	if err = c.PipeReader.Close(); err != nil {
-		return
+		w := NewWriter(&textOut, &binaryOut)
+
+		// Write text
+		_, _ = w.Write(textBuf)
+
+		// Write blob
+		_ = WriteBlobHeader(w, 42, uint32(len(blobData)))
+		_, _ = w.Write(blobData)
 	}
-	err = c.PipeWriter.Close()
-	return
-}
-
-func (c pipeReadWriteCloser) WriteString(s string) (int, error) {
-	return c.PipeWriter.Write([]byte(s))
 }
