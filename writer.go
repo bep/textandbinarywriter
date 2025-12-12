@@ -1,12 +1,16 @@
 // Copyright 2025 Bjørn Erik Pedersen
 // SPDX-License-Identifier: MIT
 
-package textandbinaryreader
+package textandbinarywriter
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 )
+
+// BlobMarker is used to identify start of a binary blob.
+var BlobMarker [8]byte = [8]byte{'T', 'A', 'K', '3', '5', 'E', 'M', '1'}
 
 const byteHeaderByteLength = 8 + 4 + 4 // marker + id + size
 
@@ -141,6 +145,43 @@ func (w *Writer) Close() (err error) {
 	}
 	if closer, ok := w.binaryw.(io.Closer); ok {
 		err = closer.Close()
+	}
+	return
+}
+
+// WriteBlobHeader writes a blob header to w with the given id and size using little-endian encoding.
+func WriteBlobHeader(w io.Writer, id, size uint32) error {
+	if err := binary.Write(w, binary.LittleEndian, BlobMarker); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.LittleEndian, id); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.LittleEndian, size); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReadBlobHeader reads a blob header from r and returns the id and size using little-endian encoding.
+func ReadBlobHeader(r io.Reader) (id, size uint32, err error) {
+	var marker [8]byte
+	if _, err := io.ReadFull(r, marker[:]); err != nil {
+		return 0, 0, err
+	}
+	if marker != BlobMarker {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	return ReadBlobHeaderExcludingMarker(r)
+}
+
+// ReadBlobHeaderExcludingMarker reads a blob header from r excluding the marker using little-endian encoding.
+func ReadBlobHeaderExcludingMarker(r io.Reader) (id, size uint32, err error) {
+	if err := binary.Read(r, binary.LittleEndian, &id); err != nil {
+		return 0, 0, err
+	}
+	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
+		return 0, 0, err
 	}
 	return
 }
