@@ -1,6 +1,6 @@
 module github.com/bep/textandbinarywriter
 
-go 1.24.0
+go 1.25
 
 require github.com/frankban/quicktest v1.14.6
 
