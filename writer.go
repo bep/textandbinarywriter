@@ -118,10 +118,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 				continue
 			}
 
-			toWrite := int64(len(p))
-			if toWrite > remaining {
-				toWrite = remaining
-			}
+			toWrite := min(int64(len(p)), remaining)
 
 			nn, err = w.binaryw.Write(p[:toWrite])
 			n += nn
