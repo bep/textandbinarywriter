@@ -1,3 +1,2 @@
 [![Tests on Linux, MacOS and Windows](https://github.com/bep/textandbinarywriter/workflows/Test/badge.svg)](https://github.com/bep/textandbinarywriter/actions?query=workflow:Test)
-[![Go Report Card](https://goreportcard.com/badge/github.com/bep/textandbinarywriter)](https://goreportcard.com/report/github.com/bep/textandbinarywriter)
 [![GoDoc](https://godoc.org/github.com/bep/textandbinarywriter?status.svg)](https://godoc.org/github.com/bep/textandbinarywriter)
